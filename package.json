@@ -27,5 +27,8 @@
   "bugs": {
     "url": "https://github.com/nalssee/mosel/issues"
   },
-  "homepage": "https://github.com/nalssee/mosel#readme"
+  "homepage": "https://github.com/nalssee/mosel#readme",
+  "directories": {
+    "test": "test"
+  }
 }
