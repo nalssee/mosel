@@ -5,6 +5,7 @@
   "main": "mosel.js",
   "dependencies": {
     "better-sqlite3": "^4.1.0",
+    "cluster": "^0.7.7",
     "csv-parse": "^2.0.0",
     "dateformat": "^3.0.2",
     "iter-tools": "^1.4.1",

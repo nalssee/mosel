@@ -5,7 +5,6 @@ var parse = require('csv-parse/lib/sync');
 var Database = require('better-sqlite3');
 var lineByLine = require('n-readlines');
 var cluster = require('cluster');
-const ncores = require('physical-cpu-count');
 
 
 // current working directory
