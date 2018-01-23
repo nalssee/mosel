@@ -1,0 +1,31 @@
+{
+  "name": "mosel",
+  "version": "1.0.0",
+  "description": "A guidence to (financial) data analysis",
+  "main": "mosel.js",
+  "dependencies": {
+    "better-sqlite3": "^4.1.0",
+    "csv-parse": "^2.0.0",
+    "dateformat": "^3.0.2",
+    "iter-tools": "^1.4.1",
+    "n-readlines": "^0.2.8",
+    "sas7bdat": "^0.1.5"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nalssee/mosel.git"
+  },
+  "keywords": [
+    "mosel"
+  ],
+  "author": "jinisrolling <jinisrolling@gmail.com>",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/nalssee/mosel/issues"
+  },
+  "homepage": "https://github.com/nalssee/mosel#readme"
+}
