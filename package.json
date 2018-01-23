@@ -1,6 +1,6 @@
 {
   "name": "mosel",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A guidence to (financial) data analysis",
   "main": "mosel.js",
   "dependencies": {
@@ -28,8 +28,5 @@
   "bugs": {
     "url": "https://github.com/nalssee/mosel/issues"
   },
-  "homepage": "https://github.com/nalssee/mosel#readme",
-  "directories": {
-    "test": "test"
-  }
+  "homepage": "https://github.com/nalssee/mosel#readme"
 }
