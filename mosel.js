@@ -5,6 +5,7 @@ var parse = require('csv-parse/lib/sync');
 var Database = require('better-sqlite3');
 var lineByLine = require('n-readlines');
 var cluster = require('cluster');
+var _ = require('lodash');
 
 
 // current working directory
@@ -13,29 +14,49 @@ var CWD = '';
 
 function Dbase(dbfile) {
     this.db = new Database(dbfile);
-    // another connection, for fetching, read only
-    this.rodb = new Database(dbfile, {
+    // another connection, for fetching
+    this.db2 = new Database(dbfile, {
         readonly: true
     });
 }
 
 
 Dbase.prototype.load = function (fname, tname, pkeys) {
-    var cnt = 0;
-    var istmt = false;
-    var db = this.db;
-    tname = tname || fname.split('.')[0];
-    if (this.getTables().indexOf(tname) === -1) {
-        var liner = new lineByLine(path.join(CWD, fname));
-        var firstLine = parse(liner.next().toString())[0];
-        db.prepare(_cstmt(tname, firstLine, pkeys)).run();
-        var istmt = db.prepare(_istmt(tname, firstLine.length));
-        var line;
-        while (line = liner.next()) {
-            istmt.run(parse(line.toString())[0]);
+    var self = this;
+    _withTrans(self.db, () => {
+        tname = tname || fname.split('.')[0];
+        if (self.getTables().indexOf(tname) === -1) {
+            var liner = new lineByLine(path.join(CWD, fname));
+            var firstLine = parse(liner.next().toString())[0];
+            self.db.prepare(_cstmt(tname, firstLine, pkeys)).run();
+            var istmt = self.db.prepare(_istmt(tname, firstLine.length));
+            var line;
+            while (line = liner.next()) {
+                istmt.run(parse(line.toString())[0]);
+            }
         }
-    }
+    });
 };
+
+
+
+Dbase.prototype.new = function (tname, iterator, pkeys) {
+    var self = this;
+    self.drop(tname);
+    var firstItem = iterator.next();
+    _withTrans(self.db, function () {
+        if (!firstItem.done) {
+            var r = firstItem.value;
+            self.db.prepare(_cstmt(tname, Object.keys(r), pkeys)).run();
+            var istmt = self.db.prepare(_istmt(tname, Object.keys(r).length));
+            istmt.run(Object.values(r));
+            for (let r1 of iterator) {
+                istmt.run(Object.values(r1));
+            }
+        }
+    });
+};
+
 
 
 Dbase.prototype.getTables = function () {
@@ -50,21 +71,22 @@ Dbase.prototype.getTables = function () {
 };
 
 
-Dbase.prototype.prepare = function (row, tname, pkeys) {
-    this.drop(tname);
-    this.db.prepare(_cstmt(tname, Object.keys(row), pkeys)).run();
-    return this.db.prepare(_istmt(tname, Object.keys(row).length));
-}
-
-
-Dbase.prototype.toCSV = function (tname, options) {
-    var stream = fs.createWriteStream(path.join(CWD, tname + '.csv'));
-    for (let row of this.db.fetch(tname, options)) {
-        stream.write(Object.values(row).join(',') + '\n');
+Dbase.prototype.toCsv = function (tname, options) {
+    var self = this;
+    var fname = path.join(CWD, tname + '.csv');
+    if (fs.existsSync(fname)) {
+        fs.unlinkSync(fname);
     }
-    stream.end();
+    var fd = fs.openSync(fname, 'a');
+    var seq = self.fetch(tname, options);
+    var firstElt = seq.next().value;
+    fs.writeSync(fd, Object.keys(firstElt).join(',') + '\n');
+    fs.writeSync(fd, Object.values(firstElt).join(',') + '\n');
+    for (let r of seq) {
+        fs.writeSync(fd, Object.values(r).join(',') + '\n');
+    }
+    fs.closeSync(fd);
 };
-
 
 
 Dbase.prototype.fetch = function* (tname, options) {
@@ -85,31 +107,35 @@ Dbase.prototype.fetch = function* (tname, options) {
     };
 
     options = options || {};
-    var columns = options.columns || "";
+    var columns = options.columns || [];
     var where = options.where || "";
-    var order = options.orderBy || "";
-    var group = options.groupBy || "";
+    var order = options.orderBy || [];
+    var group = options.groupBy || [];
     var overlap = options.overlap;
-    // use readonly database
-    var db = this.rodb;
+    // use spare db
+    var db = this.db2;
 
-    if (group) {
+    if (!_isFalsy(group)) {
         order = _listify(group).concat(_listify(order));
     }
 
     var rows = db.prepare(_buildQuery(tname, columns, where, order)).iterate();
-    if (group) {
+    if (!_isFalsy(overlap)) {
+        // default step size is 1
+        var [size, step] = Array.isArray(overlap) ? overlap : [overlap, 1];
+
+        if (!_isFalsy(group)) {
+            var rows = it.map((x) => _arr(x[1]), it.groupby(rows, _buildKeyfn(group)));
+        }
+
+        for (var x of _roll(rows, size, step)) {
+            // pretty expensive, but safety is much more important!!
+            yield copy(_.flatten(x));
+        }
+    } else if (!_isFalsy(group)) {
         for (var x of it.groupby(rows, _buildKeyfn(group))) {
             yield _arr(x[1]);
         }
-    } else if (overlap) {
-        // default step size is 1
-        var [size, step] = Array.isArray(overlap) ? overlap : [overlap, 1];
-        var grows = it.map((x) => x[1], it.groupby(rows, _buildKeyfn(group)));
-        for (var x of _roll(grows, size, step)) {
-            yield _arr(it.chain.apply(null, x));
-        }
-
     } else {
         for (var x of rows) {
             yield x;
@@ -119,13 +145,16 @@ Dbase.prototype.fetch = function* (tname, options) {
 
 
 Dbase.prototype.drop = function (tnames) {
-    for (tname of _listify(tnames)) {
-        this.db.prepare("drop table if exists " + tname).run();
-    }
+    var self = this;
+    _withTrans(self.db, function () {
+        for (tname of _listify(tnames)) {
+            self.db.prepare("drop table if exists " + tname).run();
+        }
+    });
 };
 
 
-Dbase.prototype.join = function (tinfos, newName, pkeys) {
+Dbase.prototype.join = function (newName, tinfos, pkeys) {
     // parse tinfos
     var tinfos1 = [];
     for (let [tname, cols, mcols] of tinfos) {
@@ -143,38 +172,44 @@ Dbase.prototype.join = function (tinfos, newName, pkeys) {
     for (let [tname, cols, mcols] of tinfos1.slice(1)) {
         eqs = [];
         for (let i = 0; i < mcols0.length; i++) {
-            eqs.push(`${tname}.${mcols0[i]} = ${tname}.${mcols[i]}`);
+            eqs.push(`${tname0}.${mcols0[i]} = ${tname}.${mcols[i]}`);
         }
         joinClauses.push(`left join ${tname} on ${eqs.join(" and ")}`);
     }
 
     var qry = `select ${tinfos1.map((x) => x[1].join(', ')).join(', ')}
     from ${tname0} ${joinClauses.join(' ')}`;
-    this.createAs(qry, newName, pkeys);
+    this.createAs(newName, qry, pkeys);
+
 };
 
 
 Dbase.prototype.register = function (...args) {
     this.db.register(...args);
-    this.rodb.register(...args);
+    this.db2.register(...args);
 }
 
 
-Dbase.prototype.createAs = function (query, name, pkeys) {
+Dbase.prototype.createAs = function (name, query, pkeys) {
+    var self = this;
     var getName = function (query) {
         query1 = query.split(" ").map((x) => x.trim());
         return query1[query1.indexOf("from") + 1];
     };
+
     name = name || getName(query);
     var temp_name = 'temp_' + Math.random().toString(36).substring(7);
-    try {
-        this.db.prepare(_cstmt(temp_name, this._getColumns(query), pkeys)).run();
-        this.db.prepare(`insert into ${temp_name} ${query}`).run();
-        this.db.prepare(`drop table if exists ${name}`).run();
-        this.db.prepare(`alter table ${temp_name} rename to ${name}`).run();
-    } finally {
-        this.db.prepare(`drop table if exists ${temp_name}`).run();
-    }
+
+    _withTrans(self.db, function () {
+        try {
+            self.db.prepare(_cstmt(temp_name, self._getColumns(query), pkeys)).run();
+            self.db.prepare(`insert into ${temp_name} ${query}`).run();
+            self.db.prepare(`drop table if exists ${name}`).run();
+            self.db.prepare(`alter table ${temp_name} rename to ${name}`).run();
+        } finally {
+            self.db.prepare(`drop table if exists ${temp_name}`).run();
+        }
+    });
 };
 
 
@@ -184,26 +219,30 @@ Dbase.prototype._getColumns = function (query) {
 
 
 Dbase.prototype._getPrimaryKeys = function (tname) {
-    var result =  this.db.pragma(`table_info(${tname})`)
+    var result = this.db.pragma(`table_info(${tname})`)
         .filter((x) => x.pk !== 0)
         .map((x) => x.name);
     return result.length === 0 ? null : result
 }
 
 
-Dbase.prototype.collect = function (dbs, tname) {
+Dbase.prototype.collect = function (tname, dbs) {
     var self = this;
     var istmt;
-    for (let db of dbs) {
-        connect(db, (c) => {
-            for (var r of c.fetch(tname)) {
-                if (!istmt) {
-                    istmt = self.prepare(r, tname, c._getPrimaryKeys(tname));
+    self.drop(tname);
+    _withTrans(self.db, function () {
+        for (let db of dbs) {
+            connect(db, (c) => {
+                for (let r of c.fetch(tname)) {
+                    if (!istmt) {
+                        self.db.prepare(_cstmt(tname, Object.keys(r), c._getPrimaryKeys())).run();
+                        istmt = self.db.prepare(_istmt(tname, Object.keys(r).length));
+                    }
+                    istmt.run(Object.values(r));
                 }
-                istmt.run(Object.values(r));
-            }
-        });
-    }
+            });
+        }
+    });
 };
 
 
@@ -211,24 +250,19 @@ Dbase.prototype.split = function (tname, dbwheres) {
     var self = this;
     var pkeys = self._getPrimaryKeys(tname);
     for (let db of Object.keys(dbwheres)) {
-        var where = dbwheres[db];
         connect(db, (c) => {
-            var istmt;
-            for (let r of self.fetch(tname, {
-                    where: where
-                })) {
-                if (!istmt) {
-                    istmt = c.prepare(r, tname, pkeys);
-                }
-                istmt.run(Object.values(r));
-            }
+            c.new(tname, function* () {
+                yield* self.fetch(tname, {
+                    where: dbwheres[db]
+                });
+            }(), pkeys);
         });
     }
 };
 
 
 // for parallel works across databases
-pconnect = function (dbargs, fn, options) {
+pconnect = function (dbargs, fn, fnexit, options) {
     var masterProcess = function () {
         var completed_processes = 0;
         for (let db of Object.keys(dbargs)) {
@@ -239,8 +273,9 @@ pconnect = function (dbargs, fn, options) {
             });
             worker.on('message', (message) => {
                 completed_processes += 1;
-                if (completed_processes === dbargs.length) {
-                    process.exit();
+                if (completed_processes === Object.keys(dbargs).length) {
+                    fnexit();
+                    // process.exit();
                 }
             });
         }
@@ -269,45 +304,24 @@ pconnect = function (dbargs, fn, options) {
 };
 
 
-function connect(fnames, fn, options) {
-    if (!Array.isArray(fnames)) {
-        fnames = [fnames];
-    }
+function connect(fname, fn, options) {
     options = options || {};
-    var ssqls = fnames.map((fname) => new Dbase(path.join(CWD, fname)));
+    var dbase = new Dbase(path.join(CWD, fname));
+    var db = dbase.db;
     try {
-        ssqls.forEach((ssql) => {
-            ssql.db.pragma("journal_mode=OFF");
-            // db.pragma('journal_mode = WAL');
-            ssql.db.pragma("count_changes=" + (options.countChanges || 0));
-            ssql.db.pragma("temp_store=" + (options.tempStore || 2));
-            ssql.db.pragma("cache_size=" + (options.cacheSize || 99999));
-            // ...
-            ssql.register({
-                varargs: true
-            }, isNum);
-            ssql.db.prepare('BEGIN').run();
-            // not sure if transaction prevents locks
-            ssql.rodb.prepare('BEGIN').run();
-        });
+        db.pragma("journal_mode=OFF");
+        // db.pragma('journal_mode = WAL');
+        db.pragma("count_changes=" + (options.countChanges || 0));
+        db.pragma("temp_store=" + (options.tempStore || 2));
+        db.pragma("cache_size=" + (options.cacheSize || 99999));
+        // ...
+        dbase.register({
+            varargs: true
+        }, isNum);
 
-        fn(...ssqls);
-
-        ssqls.forEach((ssql) => {
-            ssql.rodb.prepare('END TRANSACTION').run();
-            ssql.db.prepare('COMMIT').run();
-        });
-
+        fn(dbase);
     } finally {
-        ssqls.forEach((ssql) => {
-            if (ssql.db.inTransaction) {
-                ssql.rodb.prepare('END TRANSACTION').run();
-                ssql.db.prepare('ROLLBACK').run();
-            }
-            ssql.db.close();
-            // close the read only db as well
-            ssql.rodb.close();
-        });
+        db.close();
     }
 };
 
@@ -331,7 +345,7 @@ function _listify(x) {
 
 
 function _cstmt(tname, cols, pkeys) {
-    pkeys = pkeys ? [`primary key (${ _listify(pkeys).join(', ') })`] : []
+    pkeys = _isFalsy(pkeys) ? [] : [`primary key (${ _listify(pkeys).join(', ') })`];
     cols = _listify(cols).map((c) => c + " numeric")
     var schema = cols.concat(pkeys).join(', ');
     return `create table if not exists ${tname} (${schema})`;
@@ -347,10 +361,18 @@ function _istmt(tname, n) {
 }
 
 
+function _isFalsy(x) {
+    if (_.isNumber(x)) {
+        return (x === 0) ? true : false;
+    }
+    return (x === undefined) || x === null || _.isEmpty(x);
+}
+
+
 function _buildQuery(tname, cols, where, order) {
-    cols = (cols.length > 0) ? _listify(cols).join(', ') : '*';
-    where = (where.trim().length > 0) ? 'where ' + where : '';
-    order = (order.length > 0) ? 'order by ' + _listify(order).join(', ') : '';
+    cols = _isFalsy(cols) ? '*' : _listify(cols).join(', ');
+    where = _isFalsy(where) ? '' : 'where ' + where;
+    order = _isFalsy(order) ? '' : `order by ${_listify(order).join(', ')}`;
     return `select ${cols} from ${tname} ${where} ${order}`;
 }
 
@@ -370,7 +392,6 @@ function _buildKeyfn(cols) {
 }
 
 
-
 function orderBy(rs, cols) {
     var a1, b1, keyfn = _buildKeyfn(cols);
     rs.sort((a, b) => {
@@ -378,35 +399,55 @@ function orderBy(rs, cols) {
         if (a1 === b1) return 0;
         return (a1 < b1) ? -1 : 1;
     });
-    return rs
+    return rs;
 };
 
 
-function* groupBy(rs, cols) {
+function groupBy(rs, cols) {
     var keyfn = cols ? _buildKeyfn(cols) : (x) => x;
     var curval = keyfn(rs[0]),
         beg = 0,
         n = rs.length;
     var tgtval;
 
+    var result = []
     for (let i = 0; i < n; i++) {
         tgtval = keyfn(rs[i]);
         if (tgtval !== curval) {
-            yield rs.slice(beg, i);
+            result.push(rs.slice(beg, i));
             beg = i;
             curval = tgtval;
         }
     }
-    yield rs.slice(beg);
+    result.push(rs.slice(beg));
+    return result;
 }
 
 
-function* overlap(rs, size, step) {
+function overlap(rs, size, step) {
+    var r0 = rs[0];
+
     step = step || 1;
     var n = rs.length;
+    var result = [];
     for (let i = 0; i < n; i += step) {
-        yield rs.slice(i, i + size);
+        var rs1 = rs.slice(i, i + size);
+        if (Array.isArray(r0)){
+            rs1 = _.flatten(rs1);
+        }
+        // expensive!!
+        result.push(copy(rs1));
     }
+    return result;
+}
+
+
+function copy(rs) {
+    var result = [];
+    for (let r of rs) {
+        result.push(Object.assign({}, r));
+    }
+    return result;
 }
 
 
@@ -418,6 +459,20 @@ function setdir(path) {
 function isNum(...xs) {
     return xs.every((n) => !isNaN(parseFloat(n)) && isFinite(n)) ? 1 : 0;
 }
+
+
+function _withTrans(db, thunk) {
+    var begin = db.prepare('BEGIN');
+    var commit = db.prepare('COMMIT');
+    var rollback = db.prepare('ROLLBACK');
+    begin.run();
+    try {
+        thunk();
+        commit.run();
+    } finally {
+        if (db.inTransaction) rollback.run();
+    }
+};
 
 
 module.exports = {

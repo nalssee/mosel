@@ -9,6 +9,7 @@
     "csv-parse": "^2.0.0",
     "dateformat": "^3.0.2",
     "iter-tools": "^1.4.1",
+    "lodash": "^4.17.4",
     "n-readlines": "^0.2.8",
     "sas7bdat": "^0.1.5"
   },
