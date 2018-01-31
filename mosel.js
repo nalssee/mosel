@@ -261,6 +261,11 @@ Dbase.prototype.split = function (tname, dbwheres) {
 };
 
 
+Dbase.prototype.pwork = function (tname, args) {
+    var temp = Math.random().toString(36).substring(7);
+
+};
+
 // for parallel works across databases
 pconnect = function (dbargs, fn, fnexit, options) {
     var masterProcess = function () {
@@ -302,6 +307,8 @@ pconnect = function (dbargs, fn, fnexit, options) {
         childProcess();
     }
 };
+
+
 
 
 function connect(fname, fn, options) {
